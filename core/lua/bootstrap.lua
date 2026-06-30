@@ -311,32 +311,40 @@ function MCP.Press(args)
 	return { pressed = name, durationMs = durMs }
 end
 
-function MCP.Screenshot(args)
+-- render.Capture is blocked while the pause menu (GameUI) is up, AND the menu is
+-- still drawn on the current frame even after we hide it. So if it's open, close
+-- it and signal retry=true — the caller retries a frame later and captures a clean
+-- frame with the menu gone. Returns an error/retry table if not ready, else nil.
+local function captureGuard()
 	if not render or not render.Capture then return { error = "render.Capture unavailable (menu realm?)" } end
-
-	-- render.Capture is blocked while the pause menu (GameUI) is up, AND the menu is
-	-- still drawn on the current frame even after we hide it. So if it's open, close
-	-- it and bail with retry=true — the caller retries a frame later and captures a
-	-- clean frame with the menu gone.
 	if gui.IsGameUIVisible and gui.IsGameUIVisible() then
 		if gui.HideGameUI then gui.HideGameUI() end
 		return { error = "pause menu was open; closed it — retrying for a clean frame", retry = true }
 	end
+	return nil
+end
 
-	local fmt = (args.format == "png") and "png" or "jpeg"
-	local w = (args.w and args.w > 0) and args.w or ScrW()
-	local h = (args.h and args.h > 0) and args.h or ScrH()
+-- Capture a screen rect and return the image envelope (or an error table).
+local function captureRegion(x, y, w, h, fmt, quality)
 	local ok, data = pcall(render.Capture, {
 		format = fmt,
-		x = args.x or 0, y = args.y or 0,
-		w = w, h = h,
-		quality = args.quality or 80,
-		alpha = false,
+		x = x, y = y, w = w, h = h,
+		quality = quality, alpha = false,
 	})
 	if not ok or not data then
 		return { error = "render.Capture failed (not in a render pass): " .. tostring(data) }
 	end
 	return { format = fmt, width = w, height = h, base64 = util.Base64Encode(data, true) }
+end
+
+function MCP.Screenshot(args)
+	local guard = captureGuard()
+	if guard then return guard end
+
+	local fmt = (args.format == "png") and "png" or "jpeg"
+	local w = (args.w and args.w > 0) and args.w or ScrW()
+	local h = (args.h and args.h > 0) and args.h or ScrH()
+	return captureRegion(args.x or 0, args.y or 0, w, h, fmt, args.quality or 80)
 end
 
 function MCP.DumpVGUI(args)
@@ -409,6 +417,48 @@ local function resolveTarget(args)
 	if args.panel then return findPanel(string.lower(tostring(args.panel))) end
 	if args.x and args.y then return panelAt(math.floor(args.x), math.floor(args.y)) end
 	return nil
+end
+
+-- Screenshot a single panel: resolve it (by name/class/text, screen point, or
+-- keyboard focus), then crop the captured frame to its screen bounds plus padding.
+function MCP.ScreenshotPanel(args)
+	local target, how
+	if args.focused then
+		target, how = vgui.GetKeyboardFocus(), "focused panel"
+		if not IsValid(target) then return { error = "no panel currently has keyboard focus" } end
+	else
+		target = resolveTarget(args)
+		how = args.panel or (args.x and args.y and (args.x .. "," .. args.y)) or "(no selector: pass panel, x/y, or focused)"
+		if not IsValid(target) then return { error = "no panel found (" .. tostring(how) .. ")" } end
+	end
+
+	local guard = captureGuard()
+	if guard then return guard end
+
+	local px, py = target:LocalToScreen(0, 0)
+	local pw, ph = target:GetSize()
+	local pad = math.max(0, math.floor(args.padding or 0))
+
+	-- Expand by padding, then clamp to the screen so render.Capture stays in bounds.
+	local sw, sh = ScrW(), ScrH()
+	local x0 = math.Clamp(px - pad, 0, sw)
+	local y0 = math.Clamp(py - pad, 0, sh)
+	local x1 = math.Clamp(px + pw + pad, 0, sw)
+	local y1 = math.Clamp(py + ph + pad, 0, sh)
+	local w, h = math.floor(x1 - x0), math.floor(y1 - y0)
+	if w < 1 or h < 1 then
+		return { error = "panel has no on-screen area (offscreen or zero-size): " .. (target:GetClassName() or "?") }
+	end
+
+	local fmt = (args.format == "png") and "png" or "jpeg"
+	local res = captureRegion(math.floor(x0), math.floor(y0), w, h, fmt, args.quality or 80)
+	if not res.error then
+		res.panel = target:GetClassName()
+		local nm = target.GetName and target:GetName()
+		if nm and nm ~= "" then res.name = nm end
+		res.region = { x = math.floor(x0), y = math.floor(y0), w = w, h = h }
+	end
+	return res
 end
 
 -- The engine overrides the VGUI cursor to the real mouse each frame, so a
@@ -486,6 +536,7 @@ local METHODS = {
 	cursor = MCP.Cursor,
 	type = MCP.Type,
 	screenshot = MCP.Screenshot,
+	screenshot_panel = MCP.ScreenshotPanel,
 }
 
 function MCP._dispatch(name, argJson)

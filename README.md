@@ -109,6 +109,7 @@ Outputs land in `build/bin/Release/`: `core.dll`, `injector.exe`, and a copy of
 | `gmod_console_log`     | Recent console output (engine + Lua`print`)                     |
 | `gmod_console_command` | Run **any** command via the engine console (unrestricted): `map`, `connect`, `disconnect`, cvars |
 | `gmod_screenshot`      | Frame via render.Capture (PNG/JPEG, optional region x/y/w/h)      |
+| `gmod_screenshot_panel`| Screenshot one VGUI panel (by substring / x,y / focused) + padding |
 | `gmod_input`           | Hold/clear buttons and analog movement (−1..1)                   |
 | `gmod_input_clear`     | Release all synthesised input                                     |
 | `gmod_look`            | Aim toward an angle (smooth or instant; abs/rel)                  |

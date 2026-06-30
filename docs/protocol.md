@@ -49,6 +49,7 @@ thread enqueues the request and waits (up to ~8s) for the pump to fulfil it.
 | `lua_run` | `{code}` | `{output, returns[], error?}` | main |
 | `get_state` | `{radius?, maxEntities?}` | player/world snapshot | main |
 | `screenshot` | `{format?, quality?, x?,y?,w?,h?, scale?}` | `{format, width, height, base64}` | main (Present) |
+| `screenshot_panel` | `{panel?, focused?, x?, y?, padding?, format?, quality?}` | `{format, width, height, base64, panel, name?, region}` | main (Present) |
 | `input_set` | `{buttons?[], forward?, side?, up?, durationMs?, clearOthers?}` | `{held[], move}` | main |
 | `input_clear` | `{look?}` | `{cleared}` | main |
 | `look` | `{pitch?, yaw?, relative?, instant?, speed?}` | `{target, speed}` | main |

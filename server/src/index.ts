@@ -38,6 +38,42 @@ async function call(method: string, params: Record<string, unknown> = {}, timeou
   return textResult(env.result ?? {});
 }
 
+// Run a capture method and return image content. Handles the pause-menu dance:
+// the Lua side closes the menu and signals retry, so we wait a frame and retry once.
+async function captureImage(method: string, args: Record<string, unknown>): Promise<Content> {
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let env: Envelope;
+    try {
+      env = await ipc.request(method, args, 20000);
+    } catch (e: any) {
+      return errorResult(String(e?.message ?? e));
+    }
+    if (!env.ok) return errorResult(env.error ?? "screenshot failed");
+
+    const r = env.result ?? {};
+    if (r.base64) {
+      const mime = r.format === "png" ? "image/png" : "image/jpeg";
+      const label =
+        (r.panel ? `${r.panel}${r.name ? ` "${r.name}"` : ""} — ` : "") + `${r.width}x${r.height} ${r.format}`;
+      return {
+        content: [
+          { type: "image", data: r.base64, mimeType: mime },
+          { type: "text", text: label },
+        ],
+      };
+    }
+    // Lua-level failure. If the agent just hid the pause menu, the next frame
+    // should capture cleanly — wait briefly and retry once.
+    if (r.retry && attempt === 0) {
+      await sleep(150);
+      continue;
+    }
+    return errorResult(r.error ?? "screenshot failed");
+  }
+  return errorResult("screenshot failed");
+}
+
 // ---------------------------------------------------------------------------
 // Status / lifecycle
 // ---------------------------------------------------------------------------
@@ -147,37 +183,25 @@ server.registerTool(
       h: z.number().optional().describe("Crop region height (px); omit for full height"),
     },
   },
-  async (args) => {
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    for (let attempt = 0; attempt < 2; attempt++) {
-      let env: Envelope;
-      try {
-        env = await ipc.request("screenshot", args, 20000);
-      } catch (e: any) {
-        return errorResult(String(e?.message ?? e));
-      }
-      if (!env.ok) return errorResult(env.error ?? "screenshot failed");
+  async (args) => captureImage("screenshot", args)
+);
 
-      const r = env.result ?? {};
-      if (r.base64) {
-        const mime = r.format === "png" ? "image/png" : "image/jpeg";
-        return {
-          content: [
-            { type: "image", data: r.base64, mimeType: mime },
-            { type: "text", text: `${r.width}x${r.height} ${r.format}` },
-          ],
-        };
-      }
-      // Lua-level failure. If the agent just hid the pause menu, the next frame
-      // should capture cleanly — wait briefly and retry once.
-      if (r.retry && attempt === 0) {
-        await sleep(150);
-        continue;
-      }
-      return errorResult(r.error ?? "screenshot failed");
-    }
-    return errorResult("screenshot failed");
-  }
+server.registerTool(
+  "gmod_screenshot_panel",
+  {
+    description:
+      "Screenshot a single VGUI panel, cropped to its on-screen bounds. Target it by panel (a class/name/text substring, like gmod_dump_vgui's filter), by a screen point x,y (topmost panel there), or set focused to capture the keyboard-focused panel. padding adds a margin (px) around the panel for surrounding context. Same render-pass/pause-menu caveats as gmod_screenshot.",
+    inputSchema: {
+      panel: z.string().optional().describe("Locate panel by class/name/text substring"),
+      focused: z.boolean().optional().describe("Capture the keyboard-focused panel instead of using a selector"),
+      x: z.number().optional().describe("Screen x to hit-test a panel (with y)"),
+      y: z.number().optional().describe("Screen y to hit-test a panel (with x)"),
+      padding: z.number().optional().describe("Extra margin around the panel in px (default 0)"),
+      format: z.enum(["jpeg", "png"]).optional().describe("Image format (default jpeg)"),
+      quality: z.number().min(1).max(100).optional().describe("JPEG quality 1-100 (default 80)"),
+    },
+  },
+  async (args) => captureImage("screenshot_panel", args)
 );
 
 // ---------------------------------------------------------------------------
