@@ -191,8 +191,15 @@ end
 function MCP.GetState(args)
 	local radius = args.radius or 1024
 	local maxEntities = args.maxEntities or 30
+	-- During a map/server load the client realm exists but its gameplay globals
+	-- (LocalPlayer, CurTime, ...) aren't installed yet, so LocalPlayer() throws
+	-- "attempt to call global 'LocalPlayer' (a nil value)". Report a loading
+	-- state instead of erroring when called mid-transition.
+	if type(LocalPlayer) ~= "function" then
+		return { loading = true, map = (game and game.GetMap and game.GetMap()) or nil }
+	end
 	local ply = LocalPlayer()
-	if not IsValid(ply) then return { error = "no local player (in menu?)" } end
+	if not IsValid(ply) then return { loading = true, error = "no local player (in menu or loading)" } end
 
 	local origin = ply:GetPos()
 	local s = {
