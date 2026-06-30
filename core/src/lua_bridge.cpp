@@ -64,8 +64,15 @@ bool LuaBridge::TryResolve() {
     // ILuaInterface; caching the old one means using a stale/dead state (or
     // crashing). When the pointer changes we reset bootstrapped_ so the pump
     // reloads the agent into the fresh state.
+    // Require a live lua_State, not just a non-null interface. During a
+    // connect/map-load GMod constructs the client CLuaInterface a few frames
+    // before it calls SetState() on it, so GetLuaInterface(CLIENT) briefly
+    // returns an interface whose internal lua_State is still null. Adopting it
+    // and running Lua (RunStringEx in EnsureBootstrap, or a dispatch) against a
+    // null state crashes natively — this is the menu->server transition crash.
+    // The same window opens in reverse on disconnect as the state is torn down.
     ILuaInterface* client = shared_->GetLuaInterface(State::CLIENT);
-    if (client) {
+    if (client && client->GetState()) {
         if (iface_ != client) {
             iface_ = client; realm_ = State::CLIENT; bootstrapped_ = false;
             MCP_LOG("CLIENT interface (re)resolved");
@@ -73,9 +80,10 @@ bool LuaBridge::TryResolve() {
         return true;
     }
 
-    // No client state (main menu, or mid map-load) — fall back to the menu realm.
+    // No live client state (main menu, or mid map-load) — fall back to the menu
+    // realm, again only once its lua_State is live.
     ILuaInterface* menu = shared_->GetLuaInterface(State::MENU);
-    if (menu) {
+    if (menu && menu->GetState()) {
         if (iface_ != menu || realm_ != State::MENU) {
             iface_ = menu; realm_ = State::MENU; bootstrapped_ = false;
             MCP_LOG("MENU interface resolved");
@@ -83,7 +91,7 @@ bool LuaBridge::TryResolve() {
         return true;
     }
 
-    iface_ = nullptr; realm_ = -1;
+    iface_ = nullptr; realm_ = -1; bootstrapped_ = false;
     return false;
 }
 
@@ -96,7 +104,7 @@ const char* LuaBridge::RealmName() const {
 
 bool LuaBridge::EnsureBootstrap() {
     if (bootstrapped_) return true;
-    if (!iface_) return false;
+    if (!iface_ || !iface_->GetState()) return false; // not resolved, or state not live yet
 
     std::string src;
     if (!ReadBootstrapSource(src)) return false;
@@ -125,6 +133,7 @@ bool LuaBridge::ForceBootstrapReload() {
 
 std::string LuaBridge::Dispatch(const char* name, const std::string& argJson) {
     if (!iface_) return R"({"ok":false,"error":"lua interface not resolved"})";
+    if (!iface_->GetState()) return R"({"ok":false,"error":"lua interface not ready - state transition"})";
 
     ILuaInterface* L = iface_;
     const int top = L->Top();
