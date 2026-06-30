@@ -1,0 +1,24 @@
+# Build output
+/build/
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.user
+*.log
+
+# Node / TypeScript
+server/node_modules/
+server/dist/
+npm-debug.log*
+
+# Editor / OS
+.vs/
+.vscode/
+*.swp
+.DS_Store
+
+# Local scratch
+*.tmp
+shot*.jpg

@@ -1,0 +1,6 @@
+[submodule "core/third_party/garrysmod_common"]
+	path = core/third_party/garrysmod_common
+	url = https://github.com/danielga/garrysmod_common.git
+[submodule "core/third_party/minhook"]
+	path = core/third_party/minhook
+	url = https://github.com/TsudaKageyu/minhook.git
