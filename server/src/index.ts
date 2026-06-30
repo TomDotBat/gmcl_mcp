@@ -107,20 +107,25 @@ server.registerTool(
     description:
       "Pull recent game console output (engine Msg/Warning/Error and Lua print). Use sinceId for incremental reads, filter for a substring, severity for a minimum level (0=msg,1=warning,3=error).",
     inputSchema: {
-      lines: z.number().optional().describe("Max lines to return (default 200)"),
+      limit: z.number().optional().describe("Max most-recent entries to return (default 200). Alias: lines"),
+      lines: z.number().optional().describe("Alias for limit"),
       sinceId: z.number().optional().describe("Only return lines with id greater than this"),
       filter: z.string().optional().describe("Case-insensitive substring filter"),
       severity: z.number().optional().describe("Minimum severity (0=msg,1=warning,2=assert,3=error)"),
     },
   },
-  async (args) => call("console_log", args)
+  async (args) => {
+    const { limit, lines, ...rest } = args as any;
+    return call("console_log", { ...rest, lines: limit ?? lines });
+  }
 );
 
 server.registerTool(
   "gmod_console_command",
   {
-    description: "Run a console command as the local player (e.g. 'say hi', 'kill', 'noclip').",
-    inputSchema: { command: z.string().describe("The console command line to run") },
+    description:
+      "Run any console command through the engine's command buffer (unrestricted, like typing in the console). This is how you change level, join/leave servers, and run cvars/concommands — e.g. 'map gm_construct', 'connect 1.2.3.4:27015', 'disconnect', 'gamemode sandbox', 'say hi', 'noclip'. Commands run on the next frame; read results via gmod_console_log.",
+    inputSchema: { command: z.string().describe("The full console command line, e.g. 'map gm_construct'") },
   },
   async ({ command }) => call("console_command", { command })
 );
@@ -132,15 +137,14 @@ server.registerTool(
   "gmod_screenshot",
   {
     description:
-      "Capture the current frame from the D3D9 backbuffer and return it as an image. Works even with menus open. Optional crop (x,y,w,h in pixels) and scale (0-1) to shrink the image.",
+      "Capture the current frame (via GMod's render.Capture) and return it as an image. Optional crop region (x,y,w,h in pixels). Note: returns an error when the Escape menu is open or at the main menu (no client render pass) — use gmod_dump_vgui for menu UI.",
     inputSchema: {
       format: z.enum(["jpeg", "png"]).optional().describe("Image format (default jpeg)"),
       quality: z.number().min(1).max(100).optional().describe("JPEG quality 1-100 (default 80)"),
-      x: z.number().optional(),
-      y: z.number().optional(),
-      w: z.number().optional(),
-      h: z.number().optional(),
-      scale: z.number().min(0.05).max(1).optional().describe("Downscale factor 0-1 (default 1)"),
+      x: z.number().optional().describe("Crop region left (px)"),
+      y: z.number().optional().describe("Crop region top (px)"),
+      w: z.number().optional().describe("Crop region width (px); omit for full width"),
+      h: z.number().optional().describe("Crop region height (px); omit for full height"),
     },
   },
   async (args) => {

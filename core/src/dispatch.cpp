@@ -2,30 +2,13 @@
 #include "common.h"
 #include "lua_bridge.h"
 #include "console_log.h"
-#include "screenshot.h"
-#include "dx9_hook.h"
-
-#include <map>
+#include "engine_console.h"
 
 using nlohmann::json;
 
 namespace mcp {
 
 namespace {
-    // method name -> MCP.<fn> in bootstrap.lua
-    const std::map<std::string, std::string> kLuaMethods = {
-        {"lua_run",         "Run"},
-        {"get_state",       "GetState"},
-        {"input_set",       "SetInput"},
-        {"input_clear",     "ClearInput"},
-        {"look",            "Look"},
-        {"press",           "Press"},
-        {"dump_vgui",       "DumpVGUI"},
-        {"cursor",          "Cursor"},
-        {"type",            "Type"},
-        {"console_command", "ConCommand"},
-    };
-
     json ErrEnvelope(const std::string& msg) {
         return json{{"ok", false}, {"error", msg}};
     }
@@ -65,26 +48,9 @@ bool TryDispatchOffThread(const std::string& method, const json& params, json& o
 
 json DispatchMainThread(const std::string& method, const json& params) {
     try {
-        if (method == "screenshot") {
-            ScreenshotRequest req;
-            req.format  = params.value("format", std::string("jpeg"));
-            req.quality = params.value("quality", 80);
-            req.x       = params.value("x", 0);
-            req.y       = params.value("y", 0);
-            req.w       = params.value("w", 0);
-            req.h       = params.value("h", 0);
-            req.scale   = params.value("scale", 1.0);
-
-            IDirect3DDevice9* dev = CurrentDevice();
-            if (!dev) return ErrEnvelope("no D3D9 device captured yet (is the game rendering?)");
-
-            ScreenshotResult r = CaptureBackbuffer(dev, req);
-            if (!r.ok) return ErrEnvelope(r.error.empty() ? "screenshot failed" : r.error);
-            return json{{"ok", true}, {"result", {
-                {"format", r.format}, {"width", r.width}, {"height", r.height},
-                {"base64", r.base64},
-            }}};
-        }
+        // Note: "screenshot" is handled in Lua (MCP.Screenshot via render.Capture),
+        // routed through the generic forward below — it must run inside the agent's
+        // PostRender hook, which is exactly where the pump calls us from.
 
         if (method == "reload_bootstrap") {
             if (!Lua().IsReady()) return ErrEnvelope("lua interface not ready");
@@ -93,20 +59,37 @@ json DispatchMainThread(const std::string& method, const json& params) {
             return json{{"ok", true}, {"result", {{"reloaded", true}, {"realm", Lua().RealmName()}}}};
         }
 
+        if (method == "console_command") {
+            // Run through the engine's console command buffer (unrestricted), so
+            // map/connect/disconnect/echo/etc. all work. Queued to the engine and
+            // executed next frame — safe to call from the pump.
+            std::string cmd = params.value("command", std::string());
+            if (cmd.empty()) return ErrEnvelope("command required");
+            if (!RunEngineCommand(cmd.c_str()))
+                return ErrEnvelope("engine console not resolved yet (engine.dll)");
+            return json{{"ok", true}, {"result", {{"ran", cmd}}}};
+        }
+
         // Off-thread methods are also valid on the main thread (server may route
         // them here under load); serve them too.
         json off;
         if (TryDispatchOffThread(method, params, off)) return off;
 
-        auto it = kLuaMethods.find(method);
-        if (it != kLuaMethods.end()) {
-            if (!Lua().IsReady())      return ErrEnvelope("lua interface not ready");
-            if (!Lua().IsBootstrapped()) return ErrEnvelope("lua agent not loaded yet");
-            std::string envStr = Lua().Dispatch(it->second.c_str(), params.dump());
-            return json::parse(envStr, nullptr, false); // already an envelope
-        }
+        // Everything else is forwarded by name to the Lua agent's MCP._dispatch,
+        // which maps it to an MCP.* function. New Lua-backed tools therefore need
+        // no native change.
+        if (!Lua().IsReady())        return ErrEnvelope("lua interface not ready");
+        if (!Lua().IsBootstrapped()) return ErrEnvelope("lua agent not loaded yet");
 
-        return ErrEnvelope("unknown method: " + method);
+        json env = json::parse(Lua().Dispatch(method.c_str(), params.dump()), nullptr, false);
+        // If the Lua state was reset under us (e.g. a changelevel reused the
+        // interface but cleared globals), reload the agent and retry once.
+        if (env.is_object() && !env.value("ok", true) &&
+            env.value("error", std::string()).find("MCP table missing") != std::string::npos) {
+            Lua().ForceBootstrapReload();
+            env = json::parse(Lua().Dispatch(method.c_str(), params.dump()), nullptr, false);
+        }
+        return env;
     } catch (const std::exception& e) {
         return ErrEnvelope(std::string("dispatch exception: ") + e.what());
     }

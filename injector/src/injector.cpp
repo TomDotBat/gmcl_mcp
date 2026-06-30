@@ -53,27 +53,29 @@ std::string LowerStr(std::string s) {
 
 void* FindModule(DWORD pid, const std::string& moduleName); // fwd decl
 
-// Returns the pid of the real game process. The x86-64 GMod branch uses Chromium
-// (CEF), which spawns helper subprocesses that share the gmod.exe name; only the
-// real game process has lua_shared.dll loaded, so we prefer that one.
+// Returns the pid of the real, fully-loaded game process. The x86-64 GMod branch
+// uses Chromium (CEF), which spawns helper subprocesses (and a brief launcher)
+// that share the gmod.exe name. Only the real game process has lua_shared.dll
+// loaded. We REQUIRE that module — injecting into an early/CEF process during
+// startup can crash the launch. Returns 0 if the game isn't ready yet.
 DWORD FindProcess(const std::vector<std::string>& names) {
-    std::vector<DWORD> matches;
+    DWORD found = 0;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (snap == INVALID_HANDLE_VALUE) return 0;
     PROCESSENTRY32 pe = {}; pe.dwSize = sizeof(pe);
     if (Process32First(snap, &pe)) {
         do {
             std::string exe = LowerStr(pe.szExeFile);
-            for (const auto& n : names) {
-                if (exe == LowerStr(n)) { matches.push_back(pe.th32ProcessID); break; }
+            bool nameMatch = false;
+            for (const auto& n : names) if (exe == LowerStr(n)) { nameMatch = true; break; }
+            if (nameMatch && FindModule(pe.th32ProcessID, "lua_shared.dll")) {
+                found = pe.th32ProcessID; // the engine/game process — the only safe target
+                break;
             }
         } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
-
-    for (DWORD pid : matches)
-        if (FindModule(pid, "lua_shared.dll")) return pid; // the engine/game process
-    return matches.empty() ? 0 : matches.front();
+    return found;
 }
 
 // Returns base address of `moduleName` in process `pid`, or nullptr.
@@ -90,6 +92,22 @@ void* FindModule(DWORD pid, const std::string& moduleName) {
     }
     CloseHandle(snap);
     return base;
+}
+
+// True if any process with one of these names exists (even if not yet ready).
+bool AnyNamedProcess(const std::vector<std::string>& names) {
+    bool any = false;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) return false;
+    PROCESSENTRY32 pe = {}; pe.dwSize = sizeof(pe);
+    if (Process32First(snap, &pe)) {
+        do {
+            std::string exe = LowerStr(pe.szExeFile);
+            for (const auto& n : names) if (exe == LowerStr(n)) { any = true; break; }
+        } while (!any && Process32Next(snap, &pe));
+    }
+    CloseHandle(snap);
+    return any;
 }
 
 bool PipeAlive() {
@@ -193,21 +211,29 @@ int main(int argc, char** argv) {
     DWORD pid = FindProcess(names);
 
     if (cmd == "status") {
-        bool running = pid != 0;
+        bool running = pid != 0;                 // ready = has lua_shared loaded
+        bool loading = !running && AnyNamedProcess(names);
         void* mod = running ? FindModule(pid, dllName) : nullptr;
         bool injected = mod != nullptr;
         bool pipe = PipeAlive();
-        char fields[256];
+        char fields[320];
         _snprintf_s(fields, sizeof(fields), _TRUNCATE,
-                    "\"running\":%s,\"pid\":%lu,\"injected\":%s,\"pipeAlive\":%s",
-                    running ? "true" : "false", pid,
+                    "\"running\":%s,\"loading\":%s,\"pid\":%lu,\"injected\":%s,\"pipeAlive\":%s",
+                    running ? "true" : "false", loading ? "true" : "false", pid,
                     injected ? "true" : "false", pipe ? "true" : "false");
         PrintJsonResult(true, fields);
         return 0;
     }
 
     if (cmd == "inject") {
-        if (!pid) { PrintJsonResult(false, "", "Garry's Mod is not running"); return 1; }
+        if (!pid) {
+            if (AnyNamedProcess(names))
+                PrintJsonResult(false, "\"loading\":true",
+                                "Garry's Mod is still loading (lua_shared not up yet) - wait for the main menu, then retry");
+            else
+                PrintJsonResult(false, "", "Garry's Mod is not running");
+            return 1;
+        }
         if (FindModule(pid, dllName)) {
             PrintJsonResult(true, "\"alreadyInjected\":true");
             return 0;

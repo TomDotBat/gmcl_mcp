@@ -148,6 +148,19 @@ hook.Add("CreateMove", "gmod_mcp_createmove", function(cmd)
 end)
 
 ----------------------------------------------------------------------
+-- Command pump: drain native commands every frame, inside a render pass so
+-- screenshots (render.Capture) work. _mcp_native_pump is a C function the DLL
+-- registers as a global before this script runs.
+----------------------------------------------------------------------
+if _mcp_native_pump then
+	hook.Add("PostRender", "gmod_mcp_pump", function()
+		_mcp_native_pump()
+	end)
+	-- Some states fire PreRender/PostDrawHUD more reliably; PostRender is the
+	-- canonical per-frame render context for render.Capture.
+end
+
+----------------------------------------------------------------------
 -- Methods (each takes a decoded args table, returns a result table)
 ----------------------------------------------------------------------
 function MCP.Run(args)
@@ -298,6 +311,24 @@ function MCP.Press(args)
 	return { pressed = name, durationMs = durMs }
 end
 
+function MCP.Screenshot(args)
+	if not render or not render.Capture then return { error = "render.Capture unavailable (menu realm?)" } end
+	local fmt = (args.format == "png") and "png" or "jpeg"
+	local w = (args.w and args.w > 0) and args.w or ScrW()
+	local h = (args.h and args.h > 0) and args.h or ScrH()
+	local ok, data = pcall(render.Capture, {
+		format = fmt,
+		x = args.x or 0, y = args.y or 0,
+		w = w, h = h,
+		quality = args.quality or 80,
+		alpha = false,
+	})
+	if not ok or not data then
+		return { error = "render.Capture failed (Escape menu open, or not in a render pass): " .. tostring(data) }
+	end
+	return { format = fmt, width = w, height = h, base64 = util.Base64Encode(data, true) }
+end
+
 function MCP.DumpVGUI(args)
 	local maxDepth = args.maxDepth or 12
 	local filter = args.filter and string.lower(args.filter) or nil
@@ -393,19 +424,25 @@ function MCP.Type(args)
 	return { typed = text, into = target:GetClassName() }
 end
 
-function MCP.ConCommand(args)
-	local cmd = tostring(args.command or "")
-	if cmd == "" then return { error = "empty command" } end
-	local ply = LocalPlayer()
-	if IsValid(ply) then ply:ConCommand(cmd) else RunConsoleCommand(unpack(string.Explode(" ", cmd))) end
-	return { ran = cmd }
-end
-
 ----------------------------------------------------------------------
 -- Dispatcher (single native entry point)
 ----------------------------------------------------------------------
+-- Wire method name (snake_case, sent by the native dispatcher) -> MCP function.
+local METHODS = {
+	lua_run = MCP.Run,
+	get_state = MCP.GetState,
+	input_set = MCP.SetInput,
+	input_clear = MCP.ClearInput,
+	look = MCP.Look,
+	press = MCP.Press,
+	dump_vgui = MCP.DumpVGUI,
+	cursor = MCP.Cursor,
+	type = MCP.Type,
+	screenshot = MCP.Screenshot,
+}
+
 function MCP._dispatch(name, argJson)
-	local fn = MCP[name]
+	local fn = METHODS[name] or MCP[name]
 	if type(fn) ~= "function" then
 		return util.TableToJSON({ ok = false, error = "no such method: " .. tostring(name) })
 	end

@@ -1,5 +1,6 @@
 #include "lua_bridge.h"
 #include "common.h"
+#include "pump.h"
 
 #include "GarrysMod/Lua/LuaShared.h"
 #include "GarrysMod/Lua/LuaInterface.h"
@@ -45,42 +46,45 @@ namespace {
 }
 
 bool LuaBridge::TryResolve() {
-    // Once we have the client realm we're done. If we only have the menu realm,
-    // keep trying so we can upgrade to client when a map loads.
-    if (iface_ && realm_ == State::CLIENT) return true;
+    // Resolve ILuaShared once (it persists for the process lifetime).
+    if (!shared_) {
+        HMODULE luaShared = GetModuleHandleA("lua_shared.dll");
+        if (!luaShared) return false; // not loaded yet
 
-    HMODULE luaShared = GetModuleHandleA("lua_shared.dll");
-    if (!luaShared) return iface_ != nullptr; // not loaded yet
+        auto factory = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(luaShared, "CreateInterface"));
+        if (!factory) { MCP_ERR("lua_shared!CreateInterface not found"); return false; }
 
-    auto factory = reinterpret_cast<CreateInterfaceFn>(GetProcAddress(luaShared, "CreateInterface"));
-    if (!factory) { MCP_ERR("lua_shared!CreateInterface not found"); return false; }
+        shared_ = reinterpret_cast<ILuaShared*>(factory(GMOD_LUASHARED_INTERFACE, nullptr));
+        if (!shared_) { MCP_ERR("CreateInterface(LUASHARED003) returned null"); return false; }
+        MCP_LOG("resolved ILuaShared");
+    }
 
-    auto shared = reinterpret_cast<ILuaShared*>(factory(GMOD_LUASHARED_INTERFACE, nullptr));
-    if (!shared) { MCP_ERR("CreateInterface(LUASHARED003) returned null"); return false; }
-
-    // Prefer the client realm (needed for gameplay/input/state). Fall back to the
-    // menu realm so the bridge is usable at the main menu too.
-    ILuaInterface* client = shared->GetLuaInterface(State::CLIENT);
+    // Re-fetch the active interface EVERY call. GMod recreates the client Lua
+    // state on map loads (the `map` command is a full restart), producing a new
+    // ILuaInterface; caching the old one means using a stale/dead state (or
+    // crashing). When the pointer changes we reset bootstrapped_ so the pump
+    // reloads the agent into the fresh state.
+    ILuaInterface* client = shared_->GetLuaInterface(State::CLIENT);
     if (client) {
         if (iface_ != client) {
-            iface_ = client;
-            realm_ = State::CLIENT;
-            bootstrapped_ = false; // (re)load the agent into the client state
-            MCP_LOG("resolved CLIENT ILuaInterface");
+            iface_ = client; realm_ = State::CLIENT; bootstrapped_ = false;
+            MCP_LOG("CLIENT interface (re)resolved");
         }
         return true;
     }
 
-    if (!iface_) {
-        ILuaInterface* menu = shared->GetLuaInterface(State::MENU);
-        if (menu) {
-            iface_ = menu;
-            realm_ = State::MENU;
-            MCP_LOG("resolved MENU ILuaInterface (no map loaded yet)");
-            return true;
+    // No client state (main menu, or mid map-load) — fall back to the menu realm.
+    ILuaInterface* menu = shared_->GetLuaInterface(State::MENU);
+    if (menu) {
+        if (iface_ != menu || realm_ != State::MENU) {
+            iface_ = menu; realm_ = State::MENU; bootstrapped_ = false;
+            MCP_LOG("MENU interface resolved");
         }
+        return true;
     }
-    return iface_ != nullptr;
+
+    iface_ = nullptr; realm_ = -1;
+    return false;
 }
 
 const char* LuaBridge::RealmName() const {
@@ -96,6 +100,13 @@ bool LuaBridge::EnsureBootstrap() {
 
     std::string src;
     if (!ReadBootstrapSource(src)) return false;
+
+    // Expose the native command pump to Lua: _G._mcp_native_pump = NativePump.
+    // The agent's PostRender hook calls this every frame to drain commands.
+    iface_->PushSpecial(SPECIAL_GLOB);
+    iface_->PushCFunction(&NativePump);
+    iface_->SetField(-2, "_mcp_native_pump");
+    iface_->Pop(1);
 
     // run=true, printErrors=true, dontPushErrors=true, noReturns=true
     bool ok = iface_->RunStringEx("gmod_mcp/bootstrap.lua", "", src.c_str(), true, true, true, true);

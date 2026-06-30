@@ -1,7 +1,7 @@
 #include "ipc_server.h"
 #include "common.h"
 #include "dispatch.h"
-#include "dx9_hook.h"
+#include "pump.h"
 #include "command_queue.h"
 
 #include <thread>
@@ -65,6 +65,7 @@ namespace {
         if (!TryDispatchOffThread(method, params, env)) {
             // Route to the main-thread pump and wait for the result.
             auto fut = Queue().Submit(method, params);
+            WakePump(); // nudge the window subclass so the agent loads promptly
             if (fut.wait_for(std::chrono::seconds(8)) == std::future_status::ready) {
                 env = fut.get();
             } else {

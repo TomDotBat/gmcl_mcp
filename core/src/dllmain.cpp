@@ -1,22 +1,23 @@
 // dllmain.cpp — entry point for the injected core.dll.
 //
 // On attach we spin up a worker thread (you must not do heavy work or load
-// libraries from inside DllMain under the loader lock). The worker installs the
-// D3D9 Present hook and starts the IPC server. The Present hook then performs the
-// remaining main-thread initialisation (resolving Lua, loading the agent,
-// installing console capture) lazily, frame by frame.
+// libraries from inside DllMain under the loader lock). The worker subclasses the
+// game window (the "pump") and starts the IPC server. Everything else — resolving
+// Lua, loading the agent, draining commands — happens on the main thread via the
+// window subclass and the agent's PostRender hook. No Direct3D device is created.
 #include "common.h"
-#include "dx9_hook.h"
+#include "pump.h"
 #include "ipc_server.h"
-#include "console_log.h"
 
 HMODULE g_hSelfModule = nullptr;
 
 namespace {
     DWORD WINAPI WorkerMain(LPVOID) {
         MCP_LOG("core.dll worker starting (v" GMOD_MCP_VERSION ")");
-        if (!mcp::InstallD3D9Hook())
-            MCP_ERR("D3D9 hook failed; screenshots and the command pump are unavailable");
+        // Let the game settle after LoadLibrary before subclassing the window.
+        Sleep(300);
+        if (!mcp::InstallPump())
+            MCP_ERR("pump install failed (game window not found); commands unavailable");
         mcp::StartIpcServer();
         MCP_LOG("core.dll initialised");
         return 0;

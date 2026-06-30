@@ -62,6 +62,12 @@ thread enqueues the request and waits (up to ~8s) for the pump to fulfil it.
 `realm` is `client` (in a map — full features), `menu` (main menu — limited; no
 `LocalPlayer`/`CompileString`), or `none`.
 
-The Lua side of every `main`-thread method (except `screenshot`, which is native)
-is implemented in [`core/lua/bootstrap.lua`](../core/lua/bootstrap.lua) and routed
-through `MCP._dispatch(name, argJson)`.
+`console_command` is handled natively in C++ (engine console via
+`IVEngineClient::ClientCmd_Unrestricted` in `engine_console.cpp`). Every other
+`main`-thread method — including `screenshot` (GMod `render.Capture`) — is implemented
+in [`core/lua/bootstrap.lua`](../core/lua/bootstrap.lua) and routed through
+`MCP._dispatch(name, argJson)`; unknown methods are forwarded there by name.
+
+`main`-thread methods run from the agent's `PostRender` hook (client realm, a render
+pass — required for `render.Capture`) or, at the main menu, from the window subclass.
+No Direct3D device is ever created.

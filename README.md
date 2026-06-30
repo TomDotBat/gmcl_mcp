@@ -7,11 +7,13 @@ A small C++ DLL (`core.dll`) is injected into the game and:
 
 - **bridges the Lua runtime** — run Lua, read structured game state (player, weapon,
   aim, nearby entities), introspect the VGUI panel tree;
-- **hooks Direct3D9** — capture screenshots straight from the backbuffer (works even
-  with menus open);
+- **captures screenshots** — via GMod's `render.Capture` from a per-frame render pass
+  (no Direct3D device is created, so injection can't destabilise the renderer);
 - **injects input at the engine level** — movement, look, fire, jump, VGUI clicks and
   typing — via a `CreateMove`/`CUserCmd` model and the `gui`/`input` libraries, so
   **your real mouse and keyboard are never touched**;
+- **runs console commands** through the engine console (`ClientCmd_Unrestricted`) —
+  `map`, `connect`, `disconnect`, cvars, all unrestricted;
 - **captures the console** — engine `Msg`/`Warning`/`Error` and Lua `print`.
 
 > Built and verified against the **Garry's Mod x86-64 (64-bit) branch** (`gmod.exe`,
@@ -27,12 +29,16 @@ server/  (TypeScript MCP server)  ──shells out──►  injector.exe  (find
   │  named pipe \\.\pipe\gmod_mcp (length-prefixed JSON)
   ▼
 core.dll  (injected, x64)
-  ├─ ipc_server     pipe server thread
-  ├─ command_queue  hand-off to the main thread
-  ├─ dx9_hook       Present hook = main-thread "pump" (+ screenshots)
-  ├─ lua_bridge     CreateInterface("LUASHARED003") → client ILuaInterface
-  ├─ console_log    tier0 LoggingSystem listener (x64) / spew func (legacy)
-  └─ bootstrap.lua  the in-game agent: input model, state, VGUI (hot-reloadable)
+  ├─ ipc_server      pipe server thread
+  ├─ command_queue   hand-off to the main thread
+  ├─ pump            window subclass + a C fn the agent calls from PostRender; drains
+  │                  the queue on the main thread (no D3D device — nothing to crash)
+  ├─ lua_bridge      CreateInterface("LUASHARED003") → ILuaInterface (re-resolved each
+  │                  frame so it survives map changes); registers _mcp_native_pump
+  ├─ engine_console  IVEngineClient::ClientCmd_Unrestricted (map/connect/cvars)
+  ├─ console_log     tier0 LoggingSystem listener (x64) / spew func (legacy)
+  └─ bootstrap.lua   the in-game agent: input, state, VGUI, render.Capture screenshots,
+                     PostRender pump hook (hot-reloadable)
 ```
 
 See [`docs/protocol.md`](docs/protocol.md) for the wire protocol.
@@ -101,8 +107,8 @@ Outputs land in `build/bin/Release/`: `core.dll`, `injector.exe`, and a copy of
 | `gmod_lua_run`         | Run Lua in the client realm; returns print output + return values |
 | `gmod_get_state`       | Structured player/world snapshot                                  |
 | `gmod_console_log`     | Recent console output (engine + Lua`print`)                     |
-| `gmod_console_command` | Run a console command                                             |
-| `gmod_screenshot`      | D3D9 backbuffer image (PNG/JPEG, crop + scale)                    |
+| `gmod_console_command` | Run **any** command via the engine console (unrestricted): `map`, `connect`, `disconnect`, cvars |
+| `gmod_screenshot`      | Frame via render.Capture (PNG/JPEG, optional region x/y/w/h)      |
 | `gmod_input`           | Hold/clear buttons and analog movement (−1..1)                   |
 | `gmod_input_clear`     | Release all synthesised input                                     |
 | `gmod_look`            | Aim toward an angle (smooth or instant; abs/rel)                  |
@@ -130,6 +136,25 @@ loaded — the x86-64 branch runs Chromium (CEF) helper subprocesses that share 
 `injector.exe` are **x64**; they will not inject into a 32-bit game. The 32-bit branch
 would need an x86 build (the code is bitness-agnostic; only the project platform
 differs) — not currently produced.
+
+## Troubleshooting
+
+**Inject only once the game is at the main menu** (`gmod_status` → `running:true`).
+The injector refuses to target a still-loading process — injecting into an early/CEF
+subprocess that hasn't loaded `lua_shared.dll` yet can crash the launch.
+
+**`gmod_screenshot` returns an error / black frame.** Screenshots use `render.Capture`,
+which only works inside a render pass and returns nothing when the **Escape menu is
+open** or at the **main menu** (there's no client render pass). Close the menu, or use
+`gmod_dump_vgui` to inspect menu UI instead.
+
+**Tools return "lua interface not ready" right after a map load.** The client Lua
+state is recreated on `map`; the bridge re-resolves it and auto-reloads the agent
+within a frame or two — retry, or call `gmod_reload_agent`.
+
+> Design note: the pump never creates a Direct3D device. It drives the main thread via
+> a window subclass plus a `PostRender` hook in the agent, so injection can't
+> destabilise the renderer.
 
 ## Safety & scope
 

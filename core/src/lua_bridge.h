@@ -8,7 +8,7 @@
 
 #include <string>
 
-namespace GarrysMod { namespace Lua { class ILuaInterface; } }
+namespace GarrysMod { namespace Lua { class ILuaInterface; class ILuaShared; } }
 
 namespace mcp {
 
@@ -40,6 +40,7 @@ public:
     std::string Dispatch(const char* name, const std::string& argJson);
 
 private:
+    GarrysMod::Lua::ILuaShared* shared_ = nullptr;
     GarrysMod::Lua::ILuaInterface* iface_ = nullptr;
     int realm_ = -1; // GarrysMod::Lua::State value, or -1
     bool bootstrapped_ = false;

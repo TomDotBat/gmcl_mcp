@@ -30,6 +30,8 @@ project "core"
     targetname "core"
     targetdir "%{wks.location}/bin/%{cfg.buildcfg}"
     objdir "%{wks.location}/obj/%{prj.name}/%{cfg.buildcfg}"
+    characterset "MBCS"  -- the Source SDK is an ANSI codebase (tchar == char); we
+                         -- use explicit *A Win32 APIs, so MBCS is safe throughout.
 
     files {
         "core/src/**.cpp",
@@ -42,14 +44,27 @@ project "core"
         "core/third_party/garrysmod_common/include", -- GarrysMod/Lua/*.h
         "core/third_party/minhook/include",
         "core/third_party",                          -- json.hpp, stb_image_write.h
+        -- Source SDK headers (only engine_console.cpp includes them; the dirs are
+        -- harmless to other files, but the SDK *defines* are scoped per-file below).
+        "core/third_party/garrysmod_common/sourcesdk-minimal/public",
+        "core/third_party/garrysmod_common/sourcesdk-minimal/public/tier0",
+        "core/third_party/garrysmod_common/sourcesdk-minimal/public/tier1",
+        "core/third_party/garrysmod_common/sourcesdk-minimal/public/mathlib",
+        "core/third_party/garrysmod_common/sourcesdk-minimal/common",
     }
-
-    links { "d3d9" }
 
     -- Ship bootstrap.lua alongside core.dll (the bridge loads it at runtime).
     postbuildcommands {
         '{COPYFILE} "%{wks.location}/../core/lua/bootstrap.lua" "%{cfg.targetdir}/bootstrap.lua"',
     }
+
+    -- engine_console.cpp is the only file that includes the Source SDK headers
+    -- (for IVEngineClient). Scope the SDK *defines* to just that file so its
+    -- macros don't leak into the rest of the DLL / json.hpp.
+    filter "files:**engine_console.cpp"
+        defines { "COMPILER_MSVC", "COMPILER_MSVC64", "PLATFORM_64BITS",
+                  "_ALLOW_KEYWORD_MACROS", "GMOD_ALLOW_DEPRECATED", "NO_MALLOC_OVERRIDE" }
+    filter {}
 
 -- The launcher/injector the MCP server shells out to.
 project "injector"
