@@ -6,6 +6,16 @@
 #endif
 #include <windows.h>
 #include <cstdio>
+#include <cstdlib> // free, for MemAlloc_Free below
+
+// The x86-64 sourcesdk-minimal's tier1/utlstring.h calls MemAlloc_Free, but
+// tier0/memalloc.h does NOT declare it under NO_MALLOC_OVERRIDE (which we set so
+// the SDK doesn't hijack this DLL's global new/delete). Supply a plain CRT
+// wrapper before the SDK headers are parsed. The matching allocator
+// (MemAlloc_Realloc) lives out-of-line in the SDK lib we don't link, so the
+// CUtlString heap paths that would call this are never reached here — this only
+// needs to exist to satisfy the compiler.
+inline void MemAlloc_Free(void* p) { free(p); }
 
 #include "cdll_int.h" // IVEngineClient, VENGINE_CLIENT_INTERFACE_VERSION
 
