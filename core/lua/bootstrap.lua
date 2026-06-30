@@ -388,47 +388,84 @@ function MCP.DumpVGUI(args)
 	return { tree = tree or {}, count = count, truncated = truncated }
 end
 
-function MCP.Cursor(args)
-	local x, y = args.x, args.y
-	if args.panel then
-		local found = findPanel(string.lower(tostring(args.panel)))
-		if not found then return { error = "panel not found: " .. tostring(args.panel) } end
-		local px, py = found:LocalToScreen(0, 0)
-		local w, h = found:GetSize()
-		x, y = px + w / 2, py + h / 2
+-- Topmost visible panel containing a screen point. Deeper/later-drawn panels win.
+local function panelAt(x, y)
+	local best
+	local function walk(p)
+		if not IsValid(p) or not p:IsVisible() then return end
+		local px, py = p:LocalToScreen(0, 0)
+		local pw, ph = p:GetSize()
+		if x >= px and y >= py and x < px + pw and y < py + ph then
+			best = p
+			for _, c in ipairs(p:GetChildren()) do walk(c) end
+		end
 	end
-	if not x or not y then return { error = "need x,y or panel" } end
-	x, y = math.floor(x), math.floor(y)
+	walk(vgui.GetWorldPanel())
+	return best
+end
 
-	input.SetCursorPos(x, y)
-	if gui.InternalCursorMoved then gui.InternalCursorMoved(x, y) end
+-- Resolve the target panel from args: by name/class/text substring, or x,y point.
+local function resolveTarget(args)
+	if args.panel then return findPanel(string.lower(tostring(args.panel))) end
+	if args.x and args.y then return panelAt(math.floor(args.x), math.floor(args.y)) end
+	return nil
+end
 
-	local result = { x = x, y = y, cursorVisible = vgui.CursorVisible() }
+-- The engine overrides the VGUI cursor to the real mouse each frame, so a
+-- positioned click via gui.Internal* lands at the wrong place. Instead we locate
+-- the target panel and invoke its action directly — no OS cursor involved.
+function MCP.Cursor(args)
+	local target = resolveTarget(args)
+	if not IsValid(target) then
+		return { error = "no panel found (" .. (args.panel or (args.x .. "," .. args.y)) .. ")" }
+	end
+
+	local px, py = target:LocalToScreen(0, 0)
+	local w, h = target:GetSize()
+	local cx, cy = math.floor(px + w / 2), math.floor(py + h / 2)
+
+	-- Best-effort visual cursor move (not relied upon for the click).
+	input.SetCursorPos(cx, cy)
+	if gui.InternalCursorMoved then gui.InternalCursorMoved(cx, cy) end
+
+	local result = { x = cx, y = cy, target = target:GetClassName() }
 	if args.click then
-		local mb = (args.button == "right") and MOUSE_RIGHT or MOUSE_LEFT
-		gui.InternalMousePressed(mb)
-		gui.InternalMouseReleased(mb)
-		result.clicked = args.button or "left"
+		local right = args.button == "right"
+		local key = right and "DoRightClick" or "DoClick"
+		-- The hit panel is often a Label/child drawn on top of the real button
+		-- (e.g. spawn icons), so climb to the nearest ancestor with the handler.
+		local node, found = target, false
+		for _ = 1, 10 do
+			if not IsValid(node) then break end
+			if node[key] then found = true; break end
+			node = node:GetParent()
+		end
+		local mc = right and MOUSE_RIGHT or MOUSE_LEFT
+		pcall(function()
+			if found then node[key](node)
+			else target:OnMousePressed(mc); target:OnMouseReleased(mc) end
+		end)
+		result.clicked = right and "right" or "left"
+		result.invoked = found and node:GetClassName() or (target:GetClassName() .. ":OnMousePressed")
 	end
 	return result
 end
 
 function MCP.Type(args)
 	local text = tostring(args.text or "")
-	local target
-	if args.panel then
-		target = findPanel(string.lower(tostring(args.panel)))
-	else
-		target = vgui.GetKeyboardFocus()
-	end
-	if not IsValid(target) then return { error = "no target panel (nothing focused?)" } end
+	local target = resolveTarget(args) or vgui.GetKeyboardFocus()
+	if not IsValid(target) then return { error = "no target panel (give panel/x,y or focus one)" } end
 	if not target.SetText then return { error = "target has no SetText: " .. (target:GetClassName() or "?") } end
 
 	local newText = text
 	if args.append and target.GetText then newText = (target:GetText() or "") .. text end
 	target:SetText(newText)
+	if target.SetValue then pcall(target.SetValue, target, newText) end
 	if target.SetCaretPos then pcall(target.SetCaretPos, target, #newText) end
-	if target.OnTextChanged then pcall(target.OnTextChanged, target) end
+	-- Fire the common text-entry change/enter callbacks so filters/searches run.
+	for _, cb in ipairs({ "OnTextChanged", "OnChange", "OnValueChange" }) do
+		if target[cb] then pcall(target[cb], target, newText) end
+	end
 	if args.enter and target.OnEnter then pcall(target.OnEnter, target) end
 
 	return { typed = text, into = target:GetClassName() }
