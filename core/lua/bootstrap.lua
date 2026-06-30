@@ -313,6 +313,16 @@ end
 
 function MCP.Screenshot(args)
 	if not render or not render.Capture then return { error = "render.Capture unavailable (menu realm?)" } end
+
+	-- render.Capture is blocked while the pause menu (GameUI) is up, AND the menu is
+	-- still drawn on the current frame even after we hide it. So if it's open, close
+	-- it and bail with retry=true — the caller retries a frame later and captures a
+	-- clean frame with the menu gone.
+	if gui.IsGameUIVisible and gui.IsGameUIVisible() then
+		if gui.HideGameUI then gui.HideGameUI() end
+		return { error = "pause menu was open; closed it — retrying for a clean frame", retry = true }
+	end
+
 	local fmt = (args.format == "png") and "png" or "jpeg"
 	local w = (args.w and args.w > 0) and args.w or ScrW()
 	local h = (args.h and args.h > 0) and args.h or ScrH()
@@ -324,7 +334,7 @@ function MCP.Screenshot(args)
 		alpha = false,
 	})
 	if not ok or not data then
-		return { error = "render.Capture failed (Escape menu open, or not in a render pass): " .. tostring(data) }
+		return { error = "render.Capture failed (not in a render pass): " .. tostring(data) }
 	end
 	return { format = fmt, width = w, height = h, base64 = util.Base64Encode(data, true) }
 end

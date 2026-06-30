@@ -148,21 +148,35 @@ server.registerTool(
     },
   },
   async (args) => {
-    let env: Envelope;
-    try {
-      env = await ipc.request("screenshot", args, 20000);
-    } catch (e: any) {
-      return errorResult(String(e?.message ?? e));
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    for (let attempt = 0; attempt < 2; attempt++) {
+      let env: Envelope;
+      try {
+        env = await ipc.request("screenshot", args, 20000);
+      } catch (e: any) {
+        return errorResult(String(e?.message ?? e));
+      }
+      if (!env.ok) return errorResult(env.error ?? "screenshot failed");
+
+      const r = env.result ?? {};
+      if (r.base64) {
+        const mime = r.format === "png" ? "image/png" : "image/jpeg";
+        return {
+          content: [
+            { type: "image", data: r.base64, mimeType: mime },
+            { type: "text", text: `${r.width}x${r.height} ${r.format}` },
+          ],
+        };
+      }
+      // Lua-level failure. If the agent just hid the pause menu, the next frame
+      // should capture cleanly — wait briefly and retry once.
+      if (r.retry && attempt === 0) {
+        await sleep(150);
+        continue;
+      }
+      return errorResult(r.error ?? "screenshot failed");
     }
-    if (!env.ok) return errorResult(env.error ?? "screenshot failed");
-    const r = env.result;
-    const mime = r.format === "png" ? "image/png" : "image/jpeg";
-    return {
-      content: [
-        { type: "image", data: r.base64, mimeType: mime },
-        { type: "text", text: `${r.width}x${r.height} ${r.format}` },
-      ],
-    };
+    return errorResult("screenshot failed");
   }
 );
 
