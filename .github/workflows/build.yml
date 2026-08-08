@@ -1,0 +1,113 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PREMAKE_VERSION: 5.0.0-beta8
+
+jobs:
+  native:
+    name: Native (core.dll + injector.exe)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install premake5
+        run: |
+          $zip = "$env:RUNNER_TEMP\premake5.zip"
+          $dest = "$env:RUNNER_TEMP\premake5"
+          Invoke-WebRequest -Uri "https://github.com/premake/premake-core/releases/download/v$env:PREMAKE_VERSION/premake-$env:PREMAKE_VERSION-windows.zip" -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $dest
+          Add-Content -Path $env:GITHUB_PATH -Value $dest
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Generate project files
+        run: premake5 vs2022
+
+      - name: Build (Release|x64)
+        run: msbuild build/gmod-mcp.sln /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo
+
+      - name: Upload native binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-release
+          path: |
+            build/bin/Release/core.dll
+            build/bin/Release/injector.exe
+            build/bin/Release/bootstrap.lua
+          if-no-files-found: error
+
+  server:
+    name: Server (TypeScript)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Upload server build
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-dist
+          path: server/dist
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: [native, server]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-release
+          path: dist/native
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: server-dist
+          path: dist/server/dist
+
+      - name: Assemble release archives
+        run: |
+          cp server/package.json server/package-lock.json dist/server/
+          cd dist/native && zip -r ../../gmod-mcp-native-${{ github.ref_name }}-win64.zip .
+          cd ../server && zip -r ../../gmod-mcp-server-${{ github.ref_name }}.zip .
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create ${{ github.ref_name }} \
+            gmod-mcp-native-${{ github.ref_name }}-win64.zip \
+            gmod-mcp-server-${{ github.ref_name }}.zip \
+            --title ${{ github.ref_name }} \
+            --generate-notes

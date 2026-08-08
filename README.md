@@ -1,5 +1,7 @@
 # gmod-mcp
 
+[![Build](https://github.com/TomDotBat/gmcl_mcp/actions/workflows/build.yml/badge.svg)](https://github.com/TomDotBat/gmcl_mcp/actions/workflows/build.yml)
+
 An [MCP](https://modelcontextprotocol.io) server that lets an AI agent **play Garry's
 Mod by hooking the game directly**.
 
@@ -43,12 +45,38 @@ core.dll  (injected, x64)
 
 See [`docs/protocol.md`](docs/protocol.md) for the wire protocol.
 
-## Prerequisites
+## Install
 
-- Windows, **Garry's Mod** (x86-64 branch — see below)
+**Prerequisites:** Windows, **Garry's Mod** (x86-64 branch — see below), **Node.js ≥ 18**.
+
+Every push to `main` is built by [GitHub Actions](.github/workflows/build.yml), and
+every tagged version publishes prebuilt binaries — no Visual Studio or premake5 needed
+unless you're changing the native code.
+
+1. Grab the latest [release](../../releases/latest) and unzip both archives:
+   - `gmod-mcp-native-*-win64.zip` → `core.dll`, `injector.exe`, `bootstrap.lua`
+     (keep these three together in one folder — the injector loads `core.dll` from its
+     own directory, which in turn loads `bootstrap.lua` from its own directory).
+   - `gmod-mcp-server-*.zip` → the built MCP server (`dist/`, `package.json`,
+     `package-lock.json`).
+2. Install the server's runtime dependencies:
+
+   ```sh
+   cd gmod-mcp-server
+   npm install --omit=dev
+   ```
+3. Point the server at the injector — either set `GMOD_MCP_INJECTOR` to the extracted
+   `injector.exe` path, or drop the native zip's contents into `build/bin/Release/` next
+   to a checkout of this repo (that's where the server auto-discovers it from).
+
+Skip to [Run](#run) once both zips are in place.
+
+### Build from source
+
+Needed if you're changing `core/` or `injector/`.
+
 - **Visual Studio 2022** (Desktop C++ / MSVC x64) + Windows SDK
 - **premake5** (`premake5.exe` on PATH)
-- **Node.js ≥ 18**
 
 Third-party deps are vendored under `core/third_party/` (`garrysmod_common` and
 `minhook` as submodules; `json.hpp` and `stb_image_write.h` as single headers).
@@ -57,8 +85,6 @@ After cloning:
 ```sh
 git submodule update --init --recursive
 ```
-
-## Build
 
 ```powershell
 # Native (core.dll + injector.exe) -> build/bin/Release/
