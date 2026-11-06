@@ -42,7 +42,7 @@ core.dll  (injected, x64)
   ├─ console_log     tier0 spew func (SpewOutputFunc) / LoggingSystem listener
   │                  (old x86-64 beta branch)
   └─ bootstrap.lua   the in-game agent: input, state, VGUI, render.Capture screenshots,
-                     PostRender pump hook (hot-reloadable)
+                     DrawOverlay pump hook, marks, error capture (hot-reloadable)
 ```
 
 See [`docs/protocol.md`](docs/protocol.md) for the wire protocol.
@@ -136,15 +136,36 @@ Outputs land in `build/bin/Release/`: `core.dll`, `injector.exe`, and a copy of
 | `gmod_get_state`       | Structured player/world snapshot                                  |
 | `gmod_console_log`     | Recent console output (engine + Lua`print`)                     |
 | `gmod_console_command` | Run **any** command via the engine console (unrestricted): `map`, `connect`, `disconnect`, cvars |
-| `gmod_screenshot`      | Frame via render.Capture (PNG/JPEG, optional region x/y/w/h)      |
+| `gmod_wait_for`        | Block until a condition holds: Lua expression, console regex, hook fired, new Lua error, or in-game (survives map loads) |
+| `gmod_lua_errors`      | Structured Lua errors (message, file/line, stack, addon, repeat count), incremental via `since`/`epoch` |
+| `gmod_screenshot`      | Full frame incl. HUD/menus via render.Capture (PNG/JPEG, optional region). `marks` overlays numbered labels on clickable panels and/or entities, with a legend |
 | `gmod_screenshot_panel`| Screenshot one VGUI panel (by substring / x,y / focused) + padding |
 | `gmod_input`           | Hold/clear buttons and analog movement (−1..1)                   |
 | `gmod_input_clear`     | Release all synthesised input                                     |
 | `gmod_look`            | Aim toward an angle (smooth or instant; abs/rel)                  |
 | `gmod_press`           | Tap a button once                                                 |
 | `gmod_dump_vgui`       | Dump the VGUI panel tree (class/name/rect/text)                   |
-| `gmod_cursor`          | Move the in-game cursor / click a VGUI panel                      |
-| `gmod_type`            | Type into a VGUI text entry                                       |
+| `gmod_cursor`          | Move the in-game cursor / click a VGUI panel (by `mark`, x/y, or panel text) |
+| `gmod_type`            | Type into a VGUI text entry (focused, by `mark`, or by panel text) |
+
+### Agent workflow
+
+A few patterns that make agents faster and more reliable:
+
+- **Wait, don't poll.** After `gmod_console_command map gm_construct` (or `connect`),
+  call `gmod_wait_for {inGame: true, timeoutMs: 60000}`. To wait for something in the
+  game, use `{lua: "IsValid(LocalPlayer()) and LocalPlayer():Alive()"}`,
+  `{hook: "PlayerSpawn"}`, or `{console: "regex"}`. A timeout returns `matched: false`
+  rather than an error.
+- **Act on what you see.** `gmod_screenshot {marks: "panels"}` numbers every clickable
+  panel and returns a legend. Then call `gmod_cursor {mark: 4, click: true}` or
+  `gmod_type {mark: 5, text: "...", enter: true}`. No pixel guessing needed.
+  `marks: "entities"` tags visible entities with their ids.
+- **Edit, test, fix.** After changing Lua, call `gmod_lua_errors` (pass back the
+  `nextSeq`/`epoch` it returned to see only new errors). Or call
+  `gmod_wait_for {luaError: true}` to catch an error your action triggers.
+- **Lua runs inside a render hook.** Wrap world-changing calls (e.g. removing entities)
+  in `timer.Simple(0, function() ... end)` in `gmod_lua_run`.
 
 ## Development workflow
 
