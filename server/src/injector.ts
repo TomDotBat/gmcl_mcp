@@ -14,6 +14,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export interface InjectorResult {
   ok: boolean;
   running?: boolean;
+  loading?: boolean;
+  /** A 32-bit game (gmod.exe) is running; the x64 core.dll can't be injected into it. */
+  wrongBitness?: boolean;
+  note?: string;
   pid?: number;
   injected?: boolean;
   alreadyInjected?: boolean;

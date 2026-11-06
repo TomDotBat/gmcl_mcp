@@ -18,8 +18,9 @@ A small C++ DLL (`core.dll`) is injected into the game and:
   `map`, `connect`, `disconnect`, cvars, all unrestricted;
 - **captures the console** — engine `Msg`/`Warning`/`Error` and Lua `print`.
 
-> Built and verified against the **Garry's Mod x86-64 (64-bit) branch** (`gmod.exe`,
-> `bin/win64`). See [Branch &amp; bitness](#branch--bitness).
+> Built and verified against the **64-bit Garry's Mod client on Windows**
+> (`gmod_win64.exe`), which is the default on the main branch since the 64-bit update.
+> See [Branch &amp; bitness](#branch--bitness).
 
 ## Architecture
 
@@ -33,12 +34,13 @@ server/  (TypeScript MCP server)  ──shells out──►  injector.exe  (find
 core.dll  (injected, x64)
   ├─ ipc_server      pipe server thread
   ├─ command_queue   hand-off to the main thread
-  ├─ pump            window subclass + a C fn the agent calls from PostRender; drains
+  ├─ pump            window subclass + a C fn the agent calls from DrawOverlay; drains
   │                  the queue on the main thread (no D3D device — nothing to crash)
   ├─ lua_bridge      CreateInterface("LUASHARED003") → ILuaInterface (re-resolved each
   │                  frame so it survives map changes); registers _mcp_native_pump
   ├─ engine_console  IVEngineClient::ClientCmd_Unrestricted (map/connect/cvars)
-  ├─ console_log     tier0 LoggingSystem listener (x64) / spew func (legacy)
+  ├─ console_log     tier0 spew func (SpewOutputFunc) / LoggingSystem listener
+  │                  (old x86-64 beta branch)
   └─ bootstrap.lua   the in-game agent: input, state, VGUI, render.Capture screenshots,
                      PostRender pump hook (hot-reloadable)
 ```
@@ -47,7 +49,7 @@ See [`docs/protocol.md`](docs/protocol.md) for the wire protocol.
 
 ## Install
 
-**Prerequisites:** Windows, **Garry's Mod** (x86-64 branch — see below), **Node.js ≥ 18**.
+**Prerequisites:** Windows, **Garry's Mod** (64-bit — the default; see below), **Node.js ≥ 18**.
 
 Every push to `main` is built by [GitHub Actions](.github/workflows/build.yml), and
 every tagged version publishes prebuilt binaries — no Visual Studio or premake5 needed
@@ -75,7 +77,7 @@ Skip to [Run](#run) once both zips are in place.
 
 Needed if you're changing `core/` or `injector/`.
 
-- **Visual Studio 2022** (Desktop C++ / MSVC x64) + Windows SDK
+- **Visual Studio 2022** or **VS 2022 Build Tools** (Desktop C++ / MSVC x64) + Windows SDK
 - **premake5** (`premake5.exe` on PATH)
 
 Third-party deps are vendored under `core/third_party/` (`garrysmod_common` and
@@ -103,7 +105,7 @@ Outputs land in `build/bin/Release/`: `core.dll`, `injector.exe`, and a copy of
 
 ## Run
 
-1. Launch Garry's Mod (x86-64 branch).
+1. Launch Garry's Mod (64-bit, `gmod_win64.exe` — the default on Windows).
 2. Wire the MCP server into your client. Example (`claude_desktop_config.json` /
    Claude Code / Cursor):
 
@@ -157,12 +159,21 @@ Outputs land in `build/bin/Release/`: `core.dll`, `injector.exe`, and a copy of
 
 ## Branch & bitness
 
-The injector targets `gmod.exe` and prefers the process that has `lua_shared.dll`
-loaded — the x86-64 branch runs Chromium (CEF) helper subprocesses that share the
-`gmod.exe` name, and only the real game process hosts the engine. `core.dll` and
-`injector.exe` are **x64**; they will not inject into a 32-bit game. The 32-bit branch
-would need an x86 build (the code is bitness-agnostic; only the project platform
-differs) — not currently produced.
+Since the 64-bit update, Garry's Mod on Windows ships 64-bit on the **main branch**:
+the game runs as `gmod_win64.exe` in the install root (engine binaries in
+`bin/win64`), while the root `gmod.exe` is now the 32-bit build. No beta branch is
+needed.
+
+The injector looks for `gmod_win64.exe` (falling back to `gmod.exe`/`hl2.exe`, which
+also covers the old x86-64 beta's `bin/win64/gmod.exe`) and picks the process that has
+`lua_shared.dll` loaded. The game runs Chromium (CEF) helper subprocesses that share
+its exe name, and only the real game process hosts the engine.
+
+`core.dll` and `injector.exe` are **x64**, so they can't be injected into a 32-bit game.
+If the 32-bit `gmod.exe` is running, `gmod_status` reports `wrongBitness: true` and
+`gmod_inject` refuses with an explanation. Relaunch the default 64-bit build. A
+32-bit build of this project would need an x86 project platform (the code is
+otherwise bitness-agnostic). None is currently produced.
 
 ## Troubleshooting
 
@@ -170,17 +181,17 @@ differs) — not currently produced.
 The injector refuses to target a still-loading process — injecting into an early/CEF
 subprocess that hasn't loaded `lua_shared.dll` yet can crash the launch.
 
-**`gmod_screenshot` returns an error / black frame.** Screenshots use `render.Capture`,
-which only works inside a render pass and returns nothing when the **Escape menu is
-open** or at the **main menu** (there's no client render pass). Close the menu, or use
-`gmod_dump_vgui` to inspect menu UI instead.
+**`gmod_screenshot` returns an error / black frame.** Screenshots use `render.Capture`
+from the agent's `DrawOverlay` hook (after all HUD/VGUI painting, so menus are in the
+frame). It doesn't work at the **main menu** (no client render pass); the Escape menu
+is closed automatically before capturing. Use `gmod_dump_vgui` to inspect main-menu UI.
 
 **Tools return "lua interface not ready" right after a map load.** The client Lua
 state is recreated on `map`; the bridge re-resolves it and auto-reloads the agent
 within a frame or two — retry, or call `gmod_reload_agent`.
 
 > Design note: the pump never creates a Direct3D device. It drives the main thread via
-> a window subclass plus a `PostRender` hook in the agent, so injection can't
+> a window subclass plus a `DrawOverlay` hook in the agent, so injection can't
 > destabilise the renderer.
 
 ## Safety & scope

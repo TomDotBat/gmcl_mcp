@@ -34,15 +34,15 @@ namespace {
     // Runs on the main thread (the thread that pumps the window's messages).
     // Keeps the Lua interface resolved and the agent loaded into the *current* Lua
     // state. After a map load (new client state) this re-resolves and reloads the
-    // agent, which re-registers the PostRender pump hook.
+    // agent, which re-registers the DrawOverlay pump hook.
     LRESULT CALLBACK PumpWndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
         if (Lua().TryResolve())
             Lua().EnsureBootstrap();
         InstallConsoleCapture();
 
-        // In the client realm the agent's PostRender hook drains the queue (a
+        // In the client realm the agent's DrawOverlay hook drains the queue (a
         // render context, needed for screenshots). At the main menu there is no
-        // client PostRender, so drain here instead — enough for console_command
+        // client render pass, so drain here instead — enough for console_command
         // (e.g. `map` to start a game) and lua/state queries. Draining in only one
         // place per realm avoids a screenshot being consumed outside a render pass.
         const char* realm = Lua().RealmName();
@@ -76,7 +76,7 @@ void WakePump() {
 }
 
 int NativePump(lua_State* /*L*/) {
-    // Called from the agent's PostRender hook (a render context, so the screenshot
+    // Called from the agent's DrawOverlay hook (a render context, so the screenshot
     // handler's render.Capture works). Runs on the main thread.
     Queue().Drain([](Command& cmd) {
         nlohmann::json env = DispatchMainThread(cmd.method, cmd.params);

@@ -35,10 +35,11 @@ or on failure:
 
 ## Threading
 
-Most methods touch the Lua state or the D3D9 device and therefore run on the game's
-**main thread**, pumped from inside the `IDirect3DDevice9::Present` hook. The IPC
-thread enqueues the request and waits (up to ~8s) for the pump to fulfil it.
-`ping`, `console_log` are served directly on the IPC thread (read-only).
+Most methods touch the Lua state and therefore run on the game's **main thread**,
+pumped from the agent's `DrawOverlay` hook (see below). The IPC thread enqueues the
+request and waits (up to ~8s) for the pump to fulfil it. `ping`, `console_log` are
+served directly on the IPC thread (read-only). Each connected client gets its own IPC
+thread, so several clients can be connected at once.
 
 ## Methods
 

@@ -57,6 +57,11 @@ export class GmodIpc {
         "Cannot reach the in-game DLL (pipe not found). Is Garry's Mod running and is core.dll injected? Try the gmod_inject tool."
       );
     }
+    if (err.code === "ETIMEDOUT" || err.code === "EBUSY") {
+      return new Error(
+        "The in-game DLL's pipe is busy (another client is connected). Older core.dll builds serve one client at a time — restart the game and inject a current build."
+      );
+    }
     return err;
   }
 
@@ -87,7 +92,20 @@ export class GmodIpc {
   }
 
   async request(method: string, params: Record<string, unknown> = {}, timeoutMs = 15000): Promise<Envelope> {
-    const sock = await this.connect();
+    // The timeout covers connecting too: connecting to a busy pipe can block
+    // for ~30s on Windows before failing.
+    const deadline = Date.now() + timeoutMs;
+    let connectTimer: NodeJS.Timeout | undefined;
+    const sock = await Promise.race([
+      this.connect(),
+      new Promise<never>((_, reject) => {
+        connectTimer = setTimeout(
+          () => reject(new Error(`connecting to the in-game DLL timed out after ${timeoutMs}ms`)),
+          timeoutMs
+        );
+      }),
+    ]).finally(() => clearTimeout(connectTimer));
+    timeoutMs = Math.max(1, deadline - Date.now());
     const id = this.nextId++;
     const payload = Buffer.from(JSON.stringify({ id, method, params }), "utf8");
     const frame = Buffer.alloc(4 + payload.length);

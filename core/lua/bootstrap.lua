@@ -152,12 +152,19 @@ end)
 -- screenshots (render.Capture) work. _mcp_native_pump is a C function the DLL
 -- registers as a global before this script runs.
 ----------------------------------------------------------------------
+-- DrawOverlay runs after all VGUI/HUD painting, so render.Capture there sees the
+-- whole frame including menus. (PostRender runs *before* VGUI is drawn, so
+-- captures from it miss every panel.) PostRender is kept as a fallback in case
+-- another addon's DrawOverlay hook returns a value and stops ours being called.
 if _mcp_native_pump then
-	hook.Add("PostRender", "gmod_mcp_pump", function()
+	local lastOverlay = 0
+	hook.Add("DrawOverlay", "gmod_mcp_pump", function()
+		lastOverlay = SysTime()
 		_mcp_native_pump()
 	end)
-	-- Some states fire PreRender/PostDrawHUD more reliably; PostRender is the
-	-- canonical per-frame render context for render.Capture.
+	hook.Add("PostRender", "gmod_mcp_pump", function()
+		if SysTime() - lastOverlay > 0.25 then _mcp_native_pump() end
+	end)
 end
 
 ----------------------------------------------------------------------

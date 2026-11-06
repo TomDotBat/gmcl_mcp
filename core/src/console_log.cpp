@@ -27,7 +27,7 @@ namespace {
         while (g_lines.size() > kMaxLines) g_lines.pop_front();
     }
 
-    // --- x86-64 branch: tier0 LoggingSystem -------------------------------------
+    // --- tier0 LoggingSystem (old x86-64 beta branch) ---------------------------
     // public/tier0/logging.h ABI (minimal). ILoggingListener has a single virtual
     // method, Log, and NO virtual destructor — so our subclass must match exactly.
     struct Color4 { unsigned char r, g, b, a; };
@@ -59,7 +59,7 @@ namespace {
         return true;
     }
 
-    // --- 32-bit / legacy branch: tier0 spew func --------------------------------
+    // --- tier0 spew func (64-bit main branch, and 32-bit builds) ----------------
     enum SpewType_t { SPEW_MESSAGE = 0, SPEW_WARNING, SPEW_ASSERT, SPEW_ERROR, SPEW_LOG };
     enum SpewRetval_t { SPEW_DEBUGGER = 0, SPEW_CONTINUE, SPEW_ABORT };
     typedef SpewRetval_t(*SpewOutputFunc_t)(SpewType_t, const char*);
@@ -75,12 +75,16 @@ namespace {
     }
 
     bool TrySpewFunc(HMODULE tier0) {
-        auto setFn = reinterpret_cast<SetSpewFn>(GetProcAddress(tier0, "SetSpewOutputFunc"));
+        // Source 2013 dbg.h names the setter plain `SpewOutputFunc(SpewOutputFunc_t)`;
+        // the 64-bit main-branch tier0 exports exactly that (and no LoggingSystem_*).
+        // `SetSpewOutputFunc` is kept as a fallback spelling.
+        auto setFn = reinterpret_cast<SetSpewFn>(GetProcAddress(tier0, "SpewOutputFunc"));
+        if (!setFn) setFn = reinterpret_cast<SetSpewFn>(GetProcAddress(tier0, "SetSpewOutputFunc"));
         auto getFn = reinterpret_cast<GetSpewFn>(GetProcAddress(tier0, "GetSpewOutputFunc"));
         if (!setFn || !getFn) return false;
         g_originalSpew = getFn();
         setFn(&SpewHook);
-        MCP_LOG("console capture installed (legacy spew func)");
+        MCP_LOG("console capture installed (tier0 spew func)");
         return true;
     }
 }
@@ -91,8 +95,8 @@ bool InstallConsoleCapture() {
     HMODULE tier0 = GetModuleHandleA("tier0.dll");
     if (!tier0) return false; // not loaded yet
 
-    // Prefer the modern LoggingSystem (x86-64 branch); fall back to the legacy
-    // spew function (older 32-bit branch).
+    // Prefer LoggingSystem (old x86-64 beta branch) when exported; otherwise use the
+    // Source 2013 spew function (64-bit main branch since the update, and 32-bit).
     if (TryLoggingSystem(tier0) || TrySpewFunc(tier0)) {
         g_installed = true;
         return true;
