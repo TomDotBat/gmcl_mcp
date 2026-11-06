@@ -50,7 +50,7 @@ json DispatchMainThread(const std::string& method, const json& params) {
     try {
         // Note: "screenshot" is handled in Lua (MCP.Screenshot via render.Capture),
         // routed through the generic forward below — it must run inside the agent's
-        // PostRender hook, which is exactly where the pump calls us from.
+        // DrawOverlay hook (PostRender as fallback), which is where the pump calls us from.
 
         if (method == "reload_bootstrap") {
             if (!Lua().IsReady()) return ErrEnvelope("lua interface not ready");

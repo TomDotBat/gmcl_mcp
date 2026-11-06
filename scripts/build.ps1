@@ -19,8 +19,14 @@ if (-not (Test-Path $premake)) { throw "premake5 not found on PATH" }
 
 & $premake vs2022 | Out-Null
 
-$vcvars = "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-if (-not (Test-Path $vcvars)) { throw "vcvars64.bat not found — install VS2022 C++ tools" }
+# Locate any VS 2022 edition (Community/Professional/Enterprise/BuildTools) with the C++ tools.
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vsPath = if (Test-Path $vswhere) {
+    & $vswhere -latest -products * -version "[17.0,18.0)" `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+}
+$vcvars = if ($vsPath) { Join-Path $vsPath "VC\Auxiliary\Build\vcvars64.bat" }
+if (-not $vcvars -or -not (Test-Path $vcvars)) { throw "vcvars64.bat not found — install VS2022 C++ tools" }
 
 $target = if ($Core) { "core.vcxproj" } else { "gmod-mcp.sln" }
 cmd /c "`"$vcvars`" >nul 2>&1 && cd /d `"$root\build`" && msbuild $target /p:Configuration=$Config /p:Platform=x64 /m /v:minimal /nologo"

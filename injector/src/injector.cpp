@@ -1,13 +1,13 @@
 // injector.cpp — launcher/injector for gmod-mcp (x64).
 //
 // Subcommands (machine-readable JSON on stdout):
-//   injector status [--name gmod.exe] [--dll core.dll]
-//   injector inject [--name gmod.exe] [--dll core.dll]
-//   injector eject  [--name gmod.exe] [--dll core.dll]
+//   injector status [--name gmod_win64.exe] [--dll core.dll]
+//   injector inject [--name gmod_win64.exe] [--dll core.dll]
+//   injector eject  [--name gmod_win64.exe] [--dll core.dll]
 //
 // Finds the Garry's Mod process, reports whether core.dll is loaded and whether
 // the IPC pipe answers, and performs LoadLibrary injection on demand. Must be the
-// same bitness as the target (x64 for the x86-64 GMod branch).
+// same bitness as the target: x64, matching the 64-bit game (gmod_win64.exe).
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -53,29 +53,57 @@ std::string LowerStr(std::string s) {
 
 void* FindModule(DWORD pid, const std::string& moduleName); // fwd decl
 
-// Returns the pid of the real, fully-loaded game process. The x86-64 GMod branch
-// uses Chromium (CEF), which spawns helper subprocesses (and a brief launcher)
-// that share the gmod.exe name. Only the real game process has lua_shared.dll
+// True if `pid` is a native 64-bit process. A 32-bit process on 64-bit Windows
+// runs under WOW64. If the process can't be queried, assume 64-bit and let the
+// inject attempt report the failure.
+bool Is64BitProcess(DWORD pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!h) return true;
+    BOOL wow64 = FALSE;
+    BOOL ok = IsWow64Process(h, &wow64);
+    CloseHandle(h);
+    return !(ok && wow64);
+}
+
+struct GameProcess {
+    DWORD pid = 0;         // fully-loaded x64 game process (the only valid target)
+    DWORD pid32 = 0;       // fully-loaded 32-bit game process, if one was seen instead
+    std::string exe32;     // its exe name, for the error message
+};
+
+// Finds the real, fully-loaded game process. Since the 64-bit update, Garry's Mod
+// on Windows runs as gmod_win64.exe (x64) by default; gmod.exe is now the 32-bit
+// build. The game uses Chromium (CEF), which spawns helper subprocesses that
+// share the game's exe name. Only the real game process has lua_shared.dll
 // loaded. We REQUIRE that module — injecting into an early/CEF process during
-// startup can crash the launch. Returns 0 if the game isn't ready yet.
-DWORD FindProcess(const std::vector<std::string>& names) {
-    DWORD found = 0;
+// startup can crash the launch. core.dll is x64, so a 32-bit game is recorded
+// separately (pid32) and never chosen as a target.
+GameProcess FindProcess(const std::vector<std::string>& names) {
+    GameProcess found;
     HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
+    if (snap == INVALID_HANDLE_VALUE) return found;
     PROCESSENTRY32 pe = {}; pe.dwSize = sizeof(pe);
     if (Process32First(snap, &pe)) {
         do {
             std::string exe = LowerStr(pe.szExeFile);
             bool nameMatch = false;
             for (const auto& n : names) if (exe == LowerStr(n)) { nameMatch = true; break; }
-            if (nameMatch && FindModule(pe.th32ProcessID, "lua_shared.dll")) {
-                found = pe.th32ProcessID; // the engine/game process — the only safe target
+            if (!nameMatch || !FindModule(pe.th32ProcessID, "lua_shared.dll")) continue;
+            if (Is64BitProcess(pe.th32ProcessID)) {
+                found.pid = pe.th32ProcessID; // the engine/game process — the only safe target
                 break;
             }
+            if (!found.pid32) { found.pid32 = pe.th32ProcessID; found.exe32 = pe.szExeFile; }
         } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
     return found;
+}
+
+std::string WrongBitnessError(const GameProcess& gp) {
+    return "A 32-bit Garry's Mod (" + gp.exe32 + ") is running, but core.dll is x64. "
+           "Launch the 64-bit build instead (gmod_win64.exe - the default on Windows "
+           "since the 64-bit update), then retry";
 }
 
 // Returns base address of `moduleName` in process `pid`, or nullptr.
@@ -194,12 +222,12 @@ std::string GetOpt(int argc, char** argv, const std::string& flag, const std::st
 
 int main(int argc, char** argv) {
     if (argc < 2) {
-        PrintJsonResult(false, "", "usage: injector <status|inject|eject> [--name gmod.exe] [--dll core.dll]");
+        PrintJsonResult(false, "", "usage: injector <status|inject|eject> [--name gmod_win64.exe] [--dll core.dll]");
         return 2;
     }
 
     std::string cmd = argv[1];
-    std::string procName = GetOpt(argc, argv, "--name", "gmod.exe");
+    std::string procName = GetOpt(argc, argv, "--name", "gmod_win64.exe");
     std::string dllPath = GetOpt(argc, argv, "--dll", ExeDir() + "\\core.dll");
 
     // Derive the DLL basename for module enumeration.
@@ -207,12 +235,17 @@ int main(int argc, char** argv) {
     size_t s = dllName.find_last_of("\\/");
     if (s != std::string::npos) dllName = dllName.substr(s + 1);
 
-    std::vector<std::string> names = { procName, "gmod.exe", "hl2.exe" };
-    DWORD pid = FindProcess(names);
+    // gmod_win64.exe is the x64 game since the 64-bit update. gmod.exe (32-bit
+    // build, or the old x86-64 beta's bin/win64/gmod.exe) and hl2.exe are still
+    // matched; FindProcess filters out anything that isn't 64-bit.
+    std::vector<std::string> names = { procName, "gmod_win64.exe", "gmod.exe", "hl2.exe" };
+    GameProcess gp = FindProcess(names);
+    DWORD pid = gp.pid;
+    bool wrongBitness = !pid && gp.pid32 != 0;
 
     if (cmd == "status") {
-        bool running = pid != 0;                 // ready = has lua_shared loaded
-        bool loading = !running && AnyNamedProcess(names);
+        bool running = pid != 0;                 // ready = x64 and has lua_shared loaded
+        bool loading = !running && !wrongBitness && AnyNamedProcess(names);
         void* mod = running ? FindModule(pid, dllName) : nullptr;
         bool injected = mod != nullptr;
         bool pipe = PipeAlive();
@@ -221,13 +254,18 @@ int main(int argc, char** argv) {
                     "\"running\":%s,\"loading\":%s,\"pid\":%lu,\"injected\":%s,\"pipeAlive\":%s",
                     running ? "true" : "false", loading ? "true" : "false", pid,
                     injected ? "true" : "false", pipe ? "true" : "false");
-        PrintJsonResult(true, fields);
+        std::string out = fields;
+        if (wrongBitness)
+            out += ",\"wrongBitness\":true,\"note\":\"" + JsonEscape(WrongBitnessError(gp)) + "\"";
+        PrintJsonResult(true, out);
         return 0;
     }
 
     if (cmd == "inject") {
         if (!pid) {
-            if (AnyNamedProcess(names))
+            if (wrongBitness)
+                PrintJsonResult(false, "\"wrongBitness\":true", WrongBitnessError(gp));
+            else if (AnyNamedProcess(names))
                 PrintJsonResult(false, "\"loading\":true",
                                 "Garry's Mod is still loading (lua_shared not up yet) - wait for the main menu, then retry");
             else

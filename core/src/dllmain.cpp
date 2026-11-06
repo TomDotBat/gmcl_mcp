@@ -4,7 +4,7 @@
 // libraries from inside DllMain under the loader lock). The worker subclasses the
 // game window (the "pump") and starts the IPC server. Everything else — resolving
 // Lua, loading the agent, draining commands — happens on the main thread via the
-// window subclass and the agent's PostRender hook. No Direct3D device is created.
+// window subclass and the agent's DrawOverlay hook. No Direct3D device is created.
 #include "common.h"
 #include "pump.h"
 #include "ipc_server.h"

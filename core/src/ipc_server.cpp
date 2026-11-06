@@ -14,7 +14,12 @@ using nlohmann::json;
 namespace mcp {
 
 namespace {
-    std::thread       g_thread;
+    // Heap-allocated and intentionally never destroyed: a global std::thread
+    // that is still joinable when the CRT runs static destructors at process
+    // exit calls std::terminate() -> abort(), crashing the game on close (the
+    // IPC thread is still blocked in ConnectNamedPipe then, and joining from
+    // DllMain is unsafe under the loader lock).
+    std::thread*      g_thread = nullptr;
     std::atomic<bool> g_running{false};
 
     bool ReadN(HANDLE pipe, void* buf, DWORD n) {
@@ -123,11 +128,17 @@ namespace {
                 break;
             }
 
-            ServeClient(pipe);
-
-            FlushFileBuffers(pipe);
-            DisconnectNamedPipe(pipe);
-            CloseHandle(pipe);
+            // Serve each client on its own thread and immediately offer a new pipe
+            // instance, so several clients (an MCP server plus a test script, or
+            // two agents) can be connected at once. Main-thread work is still
+            // serialised through the command queue. Detached: never joined, so
+            // nothing blocks or terminates at process exit.
+            std::thread([pipe] {
+                ServeClient(pipe);
+                FlushFileBuffers(pipe);
+                DisconnectNamedPipe(pipe);
+                CloseHandle(pipe);
+            }).detach();
         }
         MCP_LOG("IPC server thread stopping");
     }
@@ -135,7 +146,7 @@ namespace {
 
 void StartIpcServer() {
     if (g_running.exchange(true)) return;
-    g_thread = std::thread(ServerLoop);
+    g_thread = new std::thread(ServerLoop);
 }
 
 void StopIpcServer() {
@@ -144,7 +155,7 @@ void StopIpcServer() {
     HANDLE poke = CreateFileA(GMOD_MCP_PIPE_NAME, GENERIC_READ | GENERIC_WRITE,
                               0, nullptr, OPEN_EXISTING, 0, nullptr);
     if (poke != INVALID_HANDLE_VALUE) CloseHandle(poke);
-    if (g_thread.joinable()) g_thread.join();
+    if (g_thread && g_thread->joinable()) g_thread->join();
 }
 
 } // namespace mcp

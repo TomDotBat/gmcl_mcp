@@ -110,7 +110,7 @@ bool LuaBridge::EnsureBootstrap() {
     if (!ReadBootstrapSource(src)) return false;
 
     // Expose the native command pump to Lua: _G._mcp_native_pump = NativePump.
-    // The agent's PostRender hook calls this every frame to drain commands.
+    // The agent's DrawOverlay hook calls this every frame to drain commands.
     iface_->PushSpecial(SPECIAL_GLOB);
     iface_->PushCFunction(&NativePump);
     iface_->SetField(-2, "_mcp_native_pump");

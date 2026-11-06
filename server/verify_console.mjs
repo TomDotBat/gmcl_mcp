@@ -1,4 +1,4 @@
-// Verifies console capture (x64 LoggingSystem) + reload_bootstrap, after the
+// Verifies console capture (tier0 spew hook) + reload_bootstrap, after the
 // final DLL rebuild. Waits for the client realm, prints from Lua + echoes via a
 // console command, then reads it back through console_log.
 import { GmodIpc } from "./dist/ipc.js";

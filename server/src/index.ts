@@ -12,6 +12,7 @@ import { z } from "zod";
 
 import { GmodIpc, Envelope } from "./ipc.js";
 import { injector } from "./injector.js";
+import { waitFor, validateWaitArgs } from "./waitFor.js";
 
 const ipc = new GmodIpc();
 const server = new McpServer({ name: "gmod-mcp", version: "0.1.0" });
@@ -38,6 +39,24 @@ async function call(method: string, params: Record<string, unknown> = {}, timeou
   return textResult(env.result ?? {});
 }
 
+// Compact one-line-per-mark legend for a marked screenshot. Panel marks list
+// their click centre; entity marks list the entity id usable with other tools.
+function formatMarks(marks: any[]): string {
+  if (marks.length === 0) return "marks: none (no interactive panels or visible entities in view)";
+  const lines = marks.map((m) => {
+    if (m.kind === "panel") {
+      const label = m.text ? ` "${m.text}"` : m.name ? ` name=${m.name}` : "";
+      return `[${m.mark}] panel ${m.class}${label} center=(${m.cx},${m.cy}) rect=${m.x},${m.y},${m.w}x${m.h}`;
+    }
+    const who = m.name ? ` "${m.name}"` : "";
+    return `[${m.mark}] entity #${m.id} ${m.class}${who} model=${m.model} dist=${m.dist} at=(${m.x},${m.y})`;
+  });
+  return (
+    "marks (click a panel with gmod_cursor {mark, click:true}; type with gmod_type {mark}):\n" +
+    lines.join("\n")
+  );
+}
+
 // Run a capture method and return image content. Handles the pause-menu dance:
 // the Lua side closes the menu and signals retry, so we wait a frame and retry once.
 async function captureImage(method: string, args: Record<string, unknown>): Promise<Content> {
@@ -56,12 +75,14 @@ async function captureImage(method: string, args: Record<string, unknown>): Prom
       const mime = r.format === "png" ? "image/png" : "image/jpeg";
       const label =
         (r.panel ? `${r.panel}${r.name ? ` "${r.name}"` : ""} — ` : "") + `${r.width}x${r.height} ${r.format}`;
-      return {
-        content: [
-          { type: "image", data: r.base64, mimeType: mime },
-          { type: "text", text: label },
-        ],
-      };
+      const content: any[] = [
+        { type: "image", data: r.base64, mimeType: mime },
+        { type: "text", text: label },
+      ];
+      if (Array.isArray(r.marks)) {
+        content.push({ type: "text", text: formatMarks(r.marks) });
+      }
+      return { content };
     }
     // Lua-level failure. If the agent just hid the pause menu, the next frame
     // should capture cleanly — wait briefly and retry once.
@@ -118,7 +139,7 @@ server.registerTool(
   "gmod_lua_run",
   {
     description:
-      "Run Lua in the client realm and return printed output plus return values. Full persistent Lua environment (no length limit, locals persist within the snippet). Example: 'print(LocalPlayer():Nick())'.",
+      "Run Lua in the client realm and return printed output plus return values. Full persistent Lua environment (no length limit, locals persist within the snippet). Example: 'print(LocalPlayer():Nick())'. The code runs inside a render hook: wrap world-changing actions (e.g. removing entities) in timer.Simple(0, function() ... end) so they run on the next game tick.",
     inputSchema: { code: z.string().describe("Lua source to execute in the client state") },
   },
   async ({ code }) => call("lua_run", { code })
@@ -166,6 +187,43 @@ server.registerTool(
   async ({ command }) => call("console_command", { command })
 );
 
+server.registerTool(
+  "gmod_lua_errors",
+  {
+    description:
+      "Structured client-realm Lua errors captured via OnLuaError: message, file/line, stack frames, realm, addon, and a repeat count (identical errors are de-duplicated). Pass since/epoch from a previous call to get only new or repeated errors; an epoch change means the Lua state was recreated (map load) and seqs restarted. Errors raised during a map load before the agent reloads may only appear in gmod_console_log.",
+    inputSchema: {
+      since: z.number().optional().describe("Only errors whose latest occurrence seq is greater than this (use nextSeq)"),
+      epoch: z.string().optional().describe("epoch from the previous call; if it differs, since is ignored"),
+      limit: z.number().optional().describe("Max errors to return, most recent (default 20)"),
+      clear: z.boolean().optional().describe("Clear the buffer after reading"),
+    },
+  },
+  async (args) => call("lua_errors", args)
+);
+
+server.registerTool(
+  "gmod_wait_for",
+  {
+    description:
+      "Block until a game condition holds (or timeout) instead of polling yourself. Give exactly one condition: lua (a Lua expression/chunk evaluated each poll until truthy, e.g. 'IsValid(LocalPlayer()) and LocalPlayer():Alive()'), console (case-insensitive regex matched against console lines printed after the wait starts), hook (wait until a GMod hook fires, e.g. 'PlayerSpawn', 'OnPlayerChat' — returns its arguments), luaError (wait for a new Lua error), or inGame (wait until a map is loaded and the local player exists — use after 'map'/'connect'). Survives map loads. A timeout is not an error: the result has matched:false.",
+    inputSchema: {
+      lua: z.string().optional().describe("Lua expression or chunk; done when it returns a truthy value"),
+      console: z.string().optional().describe("Regex (case-insensitive) for a new console line"),
+      hook: z.string().optional().describe("Hook name to wait for"),
+      luaError: z.boolean().optional().describe("Wait for a new Lua error"),
+      inGame: z.boolean().optional().describe("Wait until in a map with a valid local player"),
+      timeoutMs: z.number().optional().describe("Give up after this long (default 10000, max 120000)"),
+      pollMs: z.number().optional().describe("Poll interval (default 100)"),
+    },
+  },
+  async (args) => {
+    const bad = validateWaitArgs(args);
+    if (bad) return errorResult(bad);
+    return textResult(await waitFor(ipc, args));
+  }
+);
+
 // ---------------------------------------------------------------------------
 // Screenshot
 // ---------------------------------------------------------------------------
@@ -173,8 +231,15 @@ server.registerTool(
   "gmod_screenshot",
   {
     description:
-      "Capture the current frame (via GMod's render.Capture) and return it as an image. Optional crop region (x,y,w,h in pixels). Note: returns an error when the Escape menu is open or at the main menu (no client render pass) — use gmod_dump_vgui for menu UI.",
+      "Capture the current frame including HUD and VGUI menus (via GMod's render.Capture) and return it as an image. Optional crop region (x,y,w,h in pixels). Set marks to overlay numbered labels — 'panels' boxes every clickable/typeable VGUI panel, 'entities' tags visible entities, 'both' does both — and get a legend mapping each number to a panel (with its click centre) or entity id. Then act on a mark directly: gmod_cursor {mark, click:true} or gmod_type {mark}. Marks are drawn on a copy of the frame; the player never sees them. Note: returns an error at the main menu (no client render pass) — use gmod_dump_vgui there.",
     inputSchema: {
+      marks: z
+        .enum(["none", "panels", "entities", "both"])
+        .optional()
+        .describe("Overlay numbered marks (default none)"),
+      maxMarks: z.number().optional().describe("Max marks to draw (default 60)"),
+      radius: z.number().optional().describe("Entity mark search radius in units (default 2048)"),
+      includeOccluded: z.boolean().optional().describe("Also mark entities hidden behind walls"),
       format: z.enum(["jpeg", "png"]).optional().describe("Image format (default jpeg)"),
       quality: z.number().min(1).max(100).optional().describe("JPEG quality 1-100 (default 80)"),
       x: z.number().optional().describe("Crop region left (px)"),
@@ -284,8 +349,9 @@ server.registerTool(
   "gmod_cursor",
   {
     description:
-      "Move the in-game cursor and optionally click a VGUI panel. Provide screen x,y OR panel (a class/name/text substring to locate and click its center). This drives the game's cursor only — your real mouse is not moved. The cursor must be active (a menu open) for clicks to register.",
+      "Move the in-game cursor and optionally click a VGUI panel. Provide mark (a panel number from the last gmod_screenshot with marks), screen x,y, OR panel (a class/name/text substring to locate and click its center). This drives the game's cursor only — your real mouse is not moved. The cursor must be active (a menu open) for clicks to register.",
     inputSchema: {
+      mark: z.number().optional().describe("Panel mark number from the last marked screenshot"),
       x: z.number().optional(),
       y: z.number().optional(),
       panel: z.string().optional().describe("Locate a panel by class/name/text substring and target its center"),
@@ -300,9 +366,10 @@ server.registerTool(
   "gmod_type",
   {
     description:
-      "Type text into a VGUI text entry. Targets the keyboard-focused panel, or a panel located by name/class substring. Set append to add to existing text, enter to fire the entry's enter handler.",
+      "Type text into a VGUI text entry. Targets the keyboard-focused panel, a panel mark from the last marked screenshot, or a panel located by name/class substring. Set append to add to existing text, enter to fire the entry's enter handler.",
     inputSchema: {
       text: z.string(),
+      mark: z.number().optional().describe("Panel mark number from the last marked screenshot"),
       panel: z.string().optional().describe("Locate target by class/name substring instead of using focus"),
       append: z.boolean().optional(),
       enter: z.boolean().optional(),

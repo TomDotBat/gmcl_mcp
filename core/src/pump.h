@@ -5,8 +5,8 @@
 //      interface and (re)load the agent — this survives map changes, which
 //      recreate the client Lua state.
 //   2. NativePump: a C function exposed to Lua as _mcp_native_pump and called from
-//      the agent's PostRender hook every frame. It drains the command queue and
-//      dispatches each command. Because it runs inside PostRender, the screenshot
+//      the agent's DrawOverlay hook every frame. It drains the command queue and
+//      dispatches each command. Because it runs inside DrawOverlay, the screenshot
 //      handler can use render.Capture.
 #pragma once
 
@@ -24,7 +24,7 @@ void RemovePump();
 void WakePump();
 
 // The C function registered into Lua as _mcp_native_pump. Drains + dispatches the
-// command queue; called from the agent's PostRender hook.
+// command queue; called from the agent's DrawOverlay hook.
 int NativePump(lua_State* L);
 
 // Process-wide command queue (IPC thread submits, the pump drains).

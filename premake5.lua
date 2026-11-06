@@ -1,5 +1,6 @@
 -- premake5.lua — generates VS solution for core.dll (injected) and injector.exe.
--- Targets x64 to match the Garry's Mod x86-64 branch.
+-- Targets x64 to match the 64-bit Garry's Mod client (gmod_win64.exe, the default
+-- on Windows since the 64-bit update).
 --
 --   premake5 vs2022      (generates build/gmod-mcp.sln)
 --   then build the Release|x64 configuration.
